@@ -1,0 +1,82 @@
+name: Build Cartoon.exe
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Self-test from source (screens, FFmpeg, AI-provider flow on a mock server)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python run_cartoon.py --selftest selftest_source.txt
+          Get-Content selftest_source.txt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Make icon
+        run: python tools/make_icon.py
+        continue-on-error: true
+
+      - name: Build Cartoon.exe
+        run: pyinstaller --noconfirm --clean cartoon.spec
+
+      - name: Self-test the built Cartoon.exe
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $p = Start-Process -FilePath "dist\Cartoon.exe" -ArgumentList "--selftest","selftest_exe.txt" -Wait -PassThru
+          if (Test-Path selftest_exe.txt) { Get-Content selftest_exe.txt } else { throw "Cartoon.exe produced no self-test report" }
+          if ($p.ExitCode -ne 0) { throw "Cartoon.exe self-test failed (exit code $($p.ExitCode))" }
+
+      - name: Launch Cartoon.exe with a real window for 10 seconds
+        continue-on-error: true
+        run: |
+          $p = Start-Process -FilePath "dist\Cartoon.exe" -PassThru
+          Start-Sleep -Seconds 10
+          if ($p.HasExited) { throw "Cartoon.exe closed by itself (exit code $($p.ExitCode))" }
+          Write-Host "Cartoon.exe was still running after 10 s - launch OK"
+          Stop-Process -Id $p.Id -Force
+
+      - name: Keep reports with the build
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest-reports
+          path: |
+            selftest_source.txt
+            selftest_exe.txt
+          if-no-files-found: ignore
+
+      - name: Upload Cartoon.exe (workflow artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cartoon-exe
+          path: dist/Cartoon.exe
+          if-no-files-found: error
+
+      - name: Publish Cartoon.exe as a GitHub Release (plain .exe download, no zip)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" dist/Cartoon.exe `
+            --title "Cartoon.exe build ${{ github.run_number }}" `
+            --notes "Double-click Cartoon.exe. Needs an internet connection and an AI API key for real AI results; without a key it runs in Demo Mode."
