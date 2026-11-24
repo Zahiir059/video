@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+build/
+dist/
+assets/
+selftest_*.txt
+selftest_screens/
